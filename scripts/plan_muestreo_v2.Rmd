@@ -1,0 +1,214 @@
+---
+title: "Selva Lacandona"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+library(tidyverse)
+library(sf)
+
+theme_set(theme_minimal())
+
+# paths a archivos en LUSTRE
+paths_shp <- c("/Volumes/MADMEX/bits/lacandona/T3-2018/changes_selva_lacandona_2018.3.shp", "/Volumes/MADMEX/bits/lacandona/T4-2018/changes_selva_lacandona_2018.4.shp")
+
+# creamos data frame espacial
+read_trimestre <- function(path) {
+    read_sf(path) %>% 
+        mutate(trimestre = parse_number(path))
+}
+list_shp <- map(paths_shp, read_trimestre)
+df_change <- reduce(list_shp, rbind)
+
+# revisamos intersección con Marqués de Comillas
+marques <- read_sf("../data_input/marques_comillas/MdC_SREZyNR2017.shp") %>% 
+    select(geometry) 
+intersecta_marques <- st_intersects(df_change, marques, sparse = FALSE) %>% 
+    apply(1, sum)
+df_change <- df_change %>% 
+    mutate(
+        area_m2 = st_area(geometry),
+        menor_ha = area < 1, 
+        en_marques = intersecta_marques > 0
+        )
+```
+
+En el tercer y cuarto trimestre de 2018 se detectaron `r nrow(df_change)` 
+polígonos con cambio, la mayoría corresponden al tercer trimestre, la siguiente
+tabla enumera el total de polígonos de cambio en cada trimestre y el número de 
+polígonos de cambio en Marqués de Comillas.
+
+```{r}
+df_change %>% 
+    as.data.frame() %>% 
+    count(trimestre, en_marques) %>% 
+    spread(en_marques, n) %>% 
+    rename(Total = `FALSE`, M.Comillas = `TRUE`) %>% 
+    mutate(Total = Total + M.Comillas) %>% 
+    knitr::kable()
+```
+
+En el siguiente mapa podemos ver la distribución de los polígonos de cambio y 
+el municipio de Marqués de Comillas.
+
+```{r}
+ggplot(df_change) +
+    geom_sf(fill = "darkgray") +
+    geom_sf(data = marques, fill = NA) +
+    theme_minimal()
+```
+
+
+En adelante nos restringimos a aquellos polígonos en Marqués de Comillas, la 
+siguiente tabla muestra el número de polígonos por tipo de cambio:
+
+```{r}
+df_change <- filter(df_change, en_marques)
+df_change %>% 
+    as.data.frame() %>% 
+    count(cve_cmb, nom_cmb) %>% 
+    mutate(prop = round(100 * n / sum(n))) %>% 
+    arrange(-n) %>% 
+    knitr::kable()
+```
+```{r}
+df_change_selva <- df_change %>% 
+    filter(cve_cmb %in% c(24, 23, 27, 25))
+```
+
+El objetivo es evaluar la pérdida de selva por lo que nos concentraremos en
+los polígonos de pérdida, y reducimos así el número de polígonos de interés a 
+`r nrow(df_change_selva)`.
+
+```{r}
+menores_ha <- round(100 * mean(as.numeric(df_change_selva$area_m2) < 10000))
+menores_media_ha <- round(100 * mean(as.numeric(df_change_selva$area_m2) < 5000))
+```
+
+En cuanto al tamaño de los polígonos, el `r menores_ha` % son menores a una 
+hectárea y el `r menores_media_ha` % menores a media hectárea.
+
+```{r, fig.width=4,fig.height=3}
+ggplot(df_change_selva, aes(x = area)) +
+    geom_histogram(binwidth = 0.3) +
+    scale_x_log10() +
+    geom_vline(xintercept = 1, color = "red") +
+    labs(subtitle = "Tamaño de los polígonos (ha)")
+```
+
+```{r}
+df_change_selva <- df_change %>% 
+    filter(cve_cmb %in% c(24, 23, 27, 25)) %>% 
+    mutate(clase_tamano = Hmisc::cut2(as.numeric(area_m2), cuts = c(250, 1000, 
+        10000, 50000, 940000)))
+```
+
+## Diseño de muestra
+
+* **Marco muestral:** Polígonos con detección de pérdida de selva y 
+área mayor a 50 metros cuadrados.
+
+```{r}
+df_change_selva %>% 
+    as.data.frame() %>% 
+    count(nom_cmb) %>% 
+    arrange(-n) %>% 
+    knitr::kable()
+```
+
+* **Objetivos:** 
+    + Estimar la probabilidad de que un polígono etiquetado con pérdida de 
+    selva, haya experimentado el cambio y la calse asignada sea correcta.
+    + Estimar la probabilidad de que un polígono etiquetado con una pérdida dada
+    (por ejemplo selva-asentamientos) haya experimentado la pérdida asignada.
+
+* **Estratificación:** Clase de cambio.
+
+* **Proceso de validación:** Los expertos analizarán la fotografía y 
+determinarán si el cambio se llevó a cabo y si es de la naturaleza que se 
+indica.
+
+* **Tamaño de muestra:** Calculamos el tamaño de muestra necesario para lograr
+estimaciones con error aceptable dentro de cada categoría de cambio de interés
+(selva-agricultura, selva-pastizal,...). Para esto consideramos:  
+    + Seguimos el camino conservador de suponer que la probabilidad de que un 
+    polígono etiquetado con un cambio dado haya cambiado es alrededor a 50%.  
+    + Consideramos que las distintas clases de cambio tienen un número distinto
+    de polígonos.
+    
+    En la siguiente tabla podemos ver los errores estándar que obtendríamos con
+    distintos tamaños de muestra (columna *n*) en cada categoría de cambio 
+    (suponiendo precisiones de 50%).
+
+```{r, warning=FALSE}
+tibble(
+    n = c(10, 30, 50, 70), 
+    eest_raw_0.5 = sqrt(0.5 ^ 2 / n), 
+    eest_agri_0.5 = sqrt(1- n / 631) * eest_raw_0.5,
+    eest_pastizal_0.5 = sqrt(1- n / 67) * eest_raw_0.5,
+    eest_otros_0.5 = sqrt(1- n / 8) * eest_raw_0.5
+    ) %>% 
+    mutate_at(vars(eest_raw_0.5:eest_otros_0.5), .funs = ~round(., 2)) %>% 
+    mutate_at(vars(eest_raw_0.5:eest_otros_0.5), 
+        .funs = ~ifelse(is.na(.), "-", .)) %>% 
+    select(-eest_raw_0.5) %>% 
+    knitr::kable()
+```
+
+Si ponemos como objetivo que en cada categoría los intervalos del 95% de 
+confianza tengan una longitud máxima de 20 puntos porcentuales, (esto es 
+más/menos 10) requerimos errores estándar menores a 0.05 y obtenemos los 
+siguientes tamaños de muestra *n*.
+
+
+```{r}
+tab_change <- df_change_selva %>% 
+    as.data.frame() %>% 
+    count(nom_cmb) %>% 
+    arrange(-n) %>% 
+    mutate(
+        N = n,
+        n0 = 1.96 ^ 2 * 0.5 ^ 2 / (.1 ^ 2), 
+        n = ceiling(n0 / (1 + n0 / N))
+        ) %>% 
+    select(-n0)
+
+tab_change %>%  
+    knitr::kable()
+```
+
+Dando lugar a un tamaño de muestra total de `r sum(tab_change$n)`. 
+
+```{r, eval=FALSE}
+tab_change
+
+set.seed(129817)
+sample_selva <- df_change_selva %>% 
+    left_join(tab_change, by = "nom_cmb") %>% 
+    split(.$cve_cmb) %>% 
+    map(~sample_n(., size = first(.$n))) %>% 
+    reduce(rbind)
+# st_write(sample_selva, "data_output/2019-04-23_muestra/sample_selva_lacandona.shp")
+```
+
+
+
+### Dificultades/Dudas
+
+1. A partir de la fotografía el experto debe emitir un juicio:
+
+    + Se observa selva, por tanto no hubo pérdida y el algoritmo se equivocó.
+    + Se observa pérdida pero no es la pérdida etiquetada.
+    + Se observa pérdida y coincide con la etiqueta asignada, se puede 
+    determinar si la pérdida corresponde a los últimos meses?
+
+2. Del diseño actual **no** se podrá estimar el porcentaje de área que cambió
+debido a que solo se están analizando los polígonos con cambio etiquetado por el
+algoritmo.
+
+3. Intervalos de 90% de confianza +/- 10 (por ejemplo *(60,80)*) puntos 
+porcentuales son aceptables? Podemos apuntar a intervalos más estrechos 
+incrementando el tamaño de muestra.
+
+
