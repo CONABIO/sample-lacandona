@@ -3,13 +3,19 @@ title: "Selva Lacandona"
 output: pdf_document
 ---
 
-```{r setup, include=FALSE}
+En este documento se propone un plan de muestreo para estimar la probabilidad 
+de que un polígono identificado con pérdida de selva (por el algoritmo de 
+CONABIO) haya experimentado la pérdida etiquetada. Nos concentramos en los dos
+últimos trimestres de 2018 y en los puntos localizados en Marqués de Comillas.
+
+```{r setup, echo=FALSE}
 knitr::opts_chunk$set(echo = FALSE)
 library(tidyverse)
 library(sf)
-
 theme_set(theme_minimal())
+```
 
+```{r lectura_datos}
 # paths a archivos en LUSTRE
 paths_shp <- c("/Volumes/MADMEX/bits/lacandona/T3-2018/changes_selva_lacandona_2018.3.shp", "/Volumes/MADMEX/bits/lacandona/T4-2018/changes_selva_lacandona_2018.4.shp")
 
@@ -33,6 +39,7 @@ df_change <- df_change %>%
         en_marques = intersecta_marques > 0
         )
 ```
+
 
 En el tercer y cuarto trimestre de 2018 se detectaron `r nrow(df_change)` 
 polígonos con cambio, la mayoría corresponden al tercer trimestre, la siguiente
@@ -60,8 +67,8 @@ ggplot(df_change) +
 ```
 
 
-En adelante nos restringimos a aquellos polígonos en Marqués de Comillas, la 
-siguiente tabla muestra el número de polígonos por tipo de cambio:
+En adelante nos restringimos a aquellos polígonos localizados en Marqués de 
+Comillas, la siguiente tabla muestra el número de polígonos por tipo de cambio:
 
 ```{r}
 df_change <- filter(df_change, en_marques)
@@ -72,6 +79,7 @@ df_change %>%
     arrange(-n) %>% 
     knitr::kable()
 ```
+
 ```{r}
 df_change_selva <- df_change %>% 
     filter(cve_cmb %in% c(24, 23, 27, 25))
@@ -97,17 +105,10 @@ ggplot(df_change_selva, aes(x = area)) +
     labs(subtitle = "Tamaño de los polígonos (ha)")
 ```
 
-```{r}
-df_change_selva <- df_change %>% 
-    filter(cve_cmb %in% c(24, 23, 27, 25)) %>% 
-    mutate(clase_tamano = Hmisc::cut2(as.numeric(area_m2), cuts = c(250, 1000, 
-        10000, 50000, 940000)))
-```
-
 ## Diseño de muestra
 
 * **Marco muestral:** Polígonos con detección de pérdida de selva y 
-área mayor a 50 metros cuadrados.
+área mayor a 250 metros cuadrados.
 
 ```{r}
 df_change_selva %>% 
@@ -178,16 +179,18 @@ tab_change %>%
     knitr::kable()
 ```
 
-Dando lugar a un tamaño de muestra total de `r sum(tab_change$n)`. 
+Dando lugar a un tamaño de muestra total de `r sum(tab_change$n)`, incrementamos
+en 10% el tamaño de muestra previendo una no respuesta de ese porcentaje. 
 
 ```{r, eval=FALSE}
-tab_change
+tab_change <- tab_change %>% 
+    mutate(n_sobre = min(N, n + round(n * 0.10)))
 
 set.seed(129817)
 sample_selva <- df_change_selva %>% 
     left_join(tab_change, by = "nom_cmb") %>% 
     split(.$cve_cmb) %>% 
-    map(~sample_n(., size = first(.$n))) %>% 
+    map(~sample_n(., size = first(.$n_sobre))) %>% 
     reduce(rbind)
 # st_write(sample_selva, "data_output/2019-04-23_muestra/sample_selva_lacandona.shp")
 ```
@@ -211,4 +214,7 @@ algoritmo.
 porcentuales son aceptables? Podemos apuntar a intervalos más estrechos 
 incrementando el tamaño de muestra.
 
+```{r revision_muestra, echo=FALSE, eval=FALSE}
+
+```
 
