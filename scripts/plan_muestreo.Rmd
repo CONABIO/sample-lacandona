@@ -3,20 +3,36 @@ title: "Selva Lacandona"
 output: pdf_document
 ---
 
-```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = FALSE)
+En este documento se propone un plan de muestreo para estimar la probabilidad 
+de que un polígono identificado con pérdida de selva (por el algoritmo de 
+CONABIO) haya experimentado la pérdida etiquetada. Nos concentramos en los dos
+últimos trimestres de 2018 y en los puntos localizados en Marqués de Comillas.
+
+```{r setup, echo=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message=FALSE)
 library(tidyverse)
 library(sf)
-
 theme_set(theme_minimal())
+```
 
+```{r lectura_datos}
 # paths a archivos en LUSTRE
-paths_shp <- c("/Volumes/MADMEX/bits/lacandona/T3-2018/changes_selva_lacandona_2018.3.shp", "/Volumes/MADMEX/bits/lacandona/T4-2018/changes_selva_lacandona_2018.4.shp")
+paths_shp <- paste0("/Volumes/MADMEX/bits/lacandona/",
+    c("T4-2018/changes_selva_lacandona_2018.4.shp",
+    "T1-2019/changes_selva_lacandona_2019.1.shp"))
 
 # creamos data frame espacial
+# hay un error en cve_cmb de 2019, suponemos que cve_cmb es correcto
 read_trimestre <- function(path) {
     read_sf(path) %>% 
-        mutate(trimestre = parse_number(path))
+        mutate(trimestre = parse_number(path)) %>% 
+        select(area, cve_cmb, id, antes, despues, nom_cmb, trimestre,
+            geometry) %>% 
+        mutate(
+            cve_cmb = as.integer(paste0(antes, despues)), 
+            nom_cmb = ifelse(nom_cmb == "Selva-Aagricultura", 
+                "Selva-Agricultura", nom_cmb)
+            )
 }
 list_shp <- map(paths_shp, read_trimestre)
 df_change <- reduce(list_shp, rbind)
@@ -34,8 +50,10 @@ df_change <- df_change %>%
         )
 ```
 
-En el tercer y cuarto trimestre de 2018 se detectaron `r nrow(df_change)` 
-polígonos con cambio, la mayoría corresponden al tercer trimestre, la siguiente
+
+En el cuarto trimestre de 2018 y primer trimestre de 2019 se detectaron 
+`r nrow(df_change)` 
+polígonos con cambio, la siguiente
 tabla enumera el total de polígonos de cambio en cada trimestre y el número de 
 polígonos de cambio en Marqués de Comillas.
 
@@ -60,20 +78,21 @@ ggplot(df_change) +
 ```
 
 
-En adelante nos restringimos a aquellos polígonos en Marqués de Comillas, la 
-siguiente tabla muestra el número de polígonos por tipo de cambio:
+En adelante nos restringimos a aquellos polígonos localizados en Marqués de 
+Comillas, la siguiente tabla muestra el número de polígonos por tipo de cambio:
 
 ```{r}
-df_change <- filter(df_change, en_marques)
-df_change %>% 
+df_change_marques <- filter(df_change, en_marques)
+df_change_marques %>% 
     as.data.frame() %>% 
     count(cve_cmb, nom_cmb) %>% 
     mutate(prop = round(100 * n / sum(n))) %>% 
     arrange(-n) %>% 
     knitr::kable()
 ```
+
 ```{r}
-df_change_selva <- df_change %>% 
+df_change_selva <- df_change_marques %>% 
     filter(cve_cmb %in% c(24, 23, 27, 25))
 ```
 
@@ -97,23 +116,18 @@ ggplot(df_change_selva, aes(x = area)) +
     labs(subtitle = "Tamaño de los polígonos (ha)")
 ```
 
-```{r}
-df_change_selva <- df_change %>% 
-    filter(cve_cmb %in% c(24, 23, 27, 25)) %>% 
-    mutate(clase_tamano = Hmisc::cut2(as.numeric(area_m2), cuts = c(250, 1000, 
-        10000, 50000, 940000)))
-```
-
 ## Diseño de muestra
 
 * **Marco muestral:** Polígonos con detección de pérdida de selva y 
-área mayor a 50 metros cuadrados.
+área mayor a 250 metros cuadrados.
 
-```{r}
-df_change_selva %>% 
+```{r count}
+df_change_selva_count <- df_change_selva %>% 
     as.data.frame() %>% 
-    count(nom_cmb) %>% 
+    count(cve_cmb, nom_cmb) %>% 
     arrange(-n) %>% 
+    rename(N = n)
+df_change_selva_count %>% 
     knitr::kable()
 ```
 
@@ -141,18 +155,19 @@ estimaciones con error aceptable dentro de cada categoría de cambio de interés
     distintos tamaños de muestra (columna *n*) en cada categoría de cambio 
     (suponiendo precisiones de 50%).
 
-```{r, warning=FALSE}
-tibble(
-    n = c(10, 30, 50, 70), 
-    eest_raw_0.5 = sqrt(0.5 ^ 2 / n), 
-    eest_agri_0.5 = sqrt(1- n / 631) * eest_raw_0.5,
-    eest_pastizal_0.5 = sqrt(1- n / 67) * eest_raw_0.5,
-    eest_otros_0.5 = sqrt(1- n / 8) * eest_raw_0.5
+```{r tamanos_errores, warning=FALSE, error=TRUE}
+expand.grid(c(5, 10, 30, 50, 70), df_change_selva_count$cve_cmb) %>% 
+    rename(n = Var1, cve_cmb = Var2) %>% 
+    left_join(df_change_selva_count, by = "cve_cmb") %>% 
+    mutate(
+        eest_raw_0.5 = sqrt(0.5 ^ 2 / n), 
+        eest_clase_0.5 = sqrt(1 - n / N) * eest_raw_0.5
     ) %>% 
-    mutate_at(vars(eest_raw_0.5:eest_otros_0.5), .funs = ~round(., 2)) %>% 
-    mutate_at(vars(eest_raw_0.5:eest_otros_0.5), 
-        .funs = ~ifelse(is.na(.), "-", .)) %>% 
-    select(-eest_raw_0.5) %>% 
+    mutate_at(vars(eest_raw_0.5:eest_clase_0.5), .funs = ~round(., 2)) %>% 
+    select(-eest_raw_0.5, -cve_cmb, -N) %>% 
+    spread(nom_cmb, eest_clase_0.5) %>% 
+    mutate_all(.funs = ~ifelse(is.na(.), "-", .)) %>% 
+    select(n, `Selva-Agricultura`, `Selva-Pastizal`, `Selva-Otros`)
     knitr::kable()
 ```
 
@@ -163,12 +178,8 @@ siguientes tamaños de muestra *n*.
 
 
 ```{r}
-tab_change <- df_change_selva %>% 
-    as.data.frame() %>% 
-    count(nom_cmb) %>% 
-    arrange(-n) %>% 
+tab_change <- df_change_selva_count %>% 
     mutate(
-        N = n,
         n0 = 1.96 ^ 2 * 0.5 ^ 2 / (.1 ^ 2), 
         n = ceiling(n0 / (1 + n0 / N))
         ) %>% 
@@ -178,18 +189,21 @@ tab_change %>%
     knitr::kable()
 ```
 
-Dando lugar a un tamaño de muestra total de `r sum(tab_change$n)`. 
+Dando lugar a un tamaño de muestra total de `r sum(tab_change$n)`, incrementamos
+en 10% el tamaño de muestra previendo una no respuesta de ese porcentaje. 
 
 ```{r, eval=FALSE}
-tab_change
+tab_change <- tab_change %>% 
+    mutate(n_sobre = pmin(N, n + round(n * 0.10)))
 
 set.seed(129817)
 sample_selva <- df_change_selva %>% 
-    left_join(tab_change, by = "nom_cmb") %>% 
+    left_join(tab_change, by = c("cve_cmb", "nom_cmb")) %>% 
     split(.$cve_cmb) %>% 
-    map(~sample_n(., size = first(.$n))) %>% 
-    reduce(rbind)
-# st_write(sample_selva, "data_output/2019-04-23_muestra/sample_selva_lacandona.shp")
+    map(~sample_n(., size = first(.$n_sobre))) %>% 
+    reduce(rbind) %>% 
+    select(-N, -n, -n_sobre, -area_m2, -menor_ha, -en_marques)
+# st_write(sample_selva, "../data_output/2019-05-03_muestra/sample_selva_lacandona.shp")
 ```
 
 
@@ -211,4 +225,8 @@ algoritmo.
 porcentuales son aceptables? Podemos apuntar a intervalos más estrechos 
 incrementando el tamaño de muestra.
 
+```{r revision_muestra, echo=FALSE, eval=FALSE}
+sample <- st_read("../data_output/2019-05-03_muestra/sample_selva_lacandona.shp")
+glimpse(sample)
+```
 
